@@ -19,6 +19,7 @@ import {
   getGradleWrapperPath,
 } from '../parser_scripts/get_gradlew_path'
 import { getComposeErrorSuggestion } from '../parser_scripts/compose_errors'
+import { getCustomSwiftCLIPath } from '../parser_scripts/get_custom_swift_parse'
 
 const temporaryInputFilePath = 'tmp/figma-code-connect-parser-input.json.tmp'
 
@@ -35,7 +36,8 @@ const FIRST_PARTY_PARSERS: Record<FirstPartyExecutableParser, ParserInfo> = {
   swift: {
     command: async (cwd, config, mode) => {
       if (config.customSwiftCLIPath) {
-        return `${config.customSwiftCLIPath}`
+        const customCLIPath = path.join(getCustomSwiftCLIPath(cwd), `${config.customSwiftCLIPath}`)
+        return customCLIPath
       } else {
         return `swift run --package-path ${await getSwiftParserDir(cwd, (config as any).xcodeprojPath)} figma-swift`
       }
