@@ -1,4 +1,4 @@
-import { FigmaConnectMeta } from '../common/api'
+import { FigmaConnectMeta } from '../connect/api'
 
 /**
  * Type for the Storybook `parameters` when using Figma Code Connect. This can
@@ -11,7 +11,7 @@ import { FigmaConnectMeta } from '../common/api'
  *   } satisfies StoryParameters,
  * }
  */
-export type StoryParameters<T = {}> = {
+export type StoryParameters<T> = {
   design: {
     type: 'figma'
     /**
@@ -22,11 +22,11 @@ export type StoryParameters<T = {}> = {
      * Optional array of examples to show in Figma. If none are specified, Figma
      * will show a default code example.
      */
-    examples?: (FigmaConnectMeta<T>['example'] | string | ExampleObject<T>)[]
+    examples?: (FigmaConnectMeta<T, T>['example'] | string | ExampleObject<T>)[]
   } & Pick<FigmaConnectMeta, 'props' | 'links'>
 }
 
-type ExampleObject<T> = FigmaConnectMeta<T, string> & {
+type ExampleObject<T> = FigmaConnectMeta<T, T, unknown, string> & {
   variant?: FigmaConnectMeta['variant']
   links?: FigmaConnectMeta['links']
 }

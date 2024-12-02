@@ -14,20 +14,23 @@ const DEFAULT_CONFIG_FILE_NAME = 'figma.config.json'
 
 export const DEFAULT_INCLUDE_GLOBS_BY_PARSER = {
   react: [`**/*.{tsx,jsx}`],
+  html: [`**/*.{ts,js}`],
   swift: ['**/*.swift'],
   compose: ['**/*.kt'],
+  // include globs should be included in configs for custom parsers
+  custom: undefined,
   __unit_test__: [''],
 }
 
 // First party parsers which call into parser executables
-export type FirstPartyExecutableParser = 'swift' | 'compose' | '__unit_test__'
+export type CodeConnectExecutableParser = 'swift' | 'compose' | 'custom' | '__unit_test__'
 
 // React is a special case for now as we call it directly from the CLI rather
 // than via an executable for legacy reasons. We will migrate it to the
 // parser executable model.
-export type FirstPartyParser = 'react' | FirstPartyExecutableParser
+export type CodeConnectParser = 'react' | 'html' | CodeConnectExecutableParser
 
-type BaseCodeConnectConfig = {
+export type BaseCodeConnectConfig = {
   /**
    * Specify glob patterns for files (relative to the project root) to be
    * included when looking for source files. If not specified, all files
@@ -49,7 +52,7 @@ type BaseCodeConnectConfig = {
   /**
    * The parser name, if using an internal parser.
    */
-  parser: FirstPartyParser
+  parser: CodeConnectParser
   // TODO add parserCommand for third party parsers
 
   /**
@@ -64,7 +67,12 @@ type BaseCodeConnectConfig = {
 }
 
 export type CodeConnectExecutableParserConfig = BaseCodeConnectConfig & {
-  parser: FirstPartyExecutableParser
+  parser: CodeConnectExecutableParser
+}
+
+export type CodeConnectCustomExecutableParserConfig = BaseCodeConnectConfig & {
+  parser: 'custom'
+  parserCommand: string
 }
 
 /**
@@ -101,26 +109,38 @@ export type CodeConnectReactConfig = BaseCodeConnectConfig & {
   }
 }
 
+export type CodeConnectHtmlConfig = BaseCodeConnectConfig & {}
+
 export type CodeConnectConfig =
   | CodeConnectReactConfig
   | CodeConnectExecutableParserConfig
+  | CodeConnectCustomExecutableParserConfig
+  | CodeConnectHtmlConfig
   | BaseCodeConnectConfig
 
 interface FigmaConfig {
   codeConnect?: CodeConnectConfig
 }
 
-function determineConfigFromProject(dir: string): FigmaConfig | undefined {
+export function determineConfigFromProject(
+  dir: string,
+  exitOnError = true,
+): FigmaConfig | undefined {
   const parser = determineParserFromProject(dir)
   if (parser) {
+    const label = determineLabelFromProject(dir)
+    if (label) {
+      return { codeConnect: { parser, label } }
+    }
+
     return { codeConnect: { parser } }
   }
 
-  // TODO detect other project types here
-
-  exitWithError(
-    `Code Connect was not able to determine your project type, and no config file was found. Please ensure you are running Code Connect from your project root. You may need to create a config file specifying which parser to use. See https://github.com/figma/code-connect/ for instructions.`,
-  )
+  if (exitOnError) {
+    exitWithError(
+      `Code Connect was not able to determine your project type, and no config file was found. Please ensure you are running Code Connect from your project root. You may need to create a config file specifying which parser to use. See https://github.com/figma/code-connect/ for instructions.`,
+    )
+  }
 }
 
 function showParserMessage(message: string) {
@@ -130,13 +150,20 @@ function showParserMessage(message: string) {
   )
 }
 
+function packageJsonContains(packageJson: any, dependency: string) {
+  return (
+    (packageJson.dependencies && packageJson.dependencies[dependency]) ||
+    (packageJson.peerDependencies && packageJson.peerDependencies[dependency])
+  )
+}
+
 // Walk up from the given directory looking for the first directory which
 // matches heuristics for the platforms we support. This means that e.g. if you
 // have a Swift project inside a React project, we'll detect Swift. This enables
 // users to run commands from anywhere inside their project, rather than having
 // to run from the root (the same way npm works).
-export function determineParserFromProject(dir: string): FirstPartyParser | undefined {
-  let parser: FirstPartyParser | undefined
+function determineParserFromProject(dir: string): CodeConnectParser | undefined {
+  let parser: CodeConnectParser | undefined
 
   findUp.sync(
     (currentDir) => {
@@ -144,10 +171,7 @@ export function determineParserFromProject(dir: string): FirstPartyParser | unde
 
       if (fs.existsSync(packageJsonPath)) {
         const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'))
-        if (
-          (packageJson.dependencies && packageJson.dependencies['react']) ||
-          (packageJson.peerDependencies && packageJson.peerDependencies['react'])
-        ) {
+        if (packageJsonContains(packageJson, 'react')) {
           showParserMessage(
             `Using "react" parser as package.json containing a "react" ${
               packageJson.dependencies && packageJson.dependencies['react']
@@ -156,6 +180,12 @@ export function determineParserFromProject(dir: string): FirstPartyParser | unde
             } was found in ${currentDir}`,
           )
           parser = 'react'
+          return findUp.stop
+        } else {
+          showParserMessage(
+            `Using "html" parser as package.json containing no other supported web frameworks was found in ${currentDir}`,
+          )
+          parser = 'html'
           return findUp.stop
         }
       } else {
@@ -178,6 +208,51 @@ export function determineParserFromProject(dir: string): FirstPartyParser | unde
   )
 
   return parser
+}
+
+// Similarly to determineParserFromProject, this walks up looking for a
+// package.json containing a library which we support and we set a specific
+// label for. An example is Angular, which is detected as 'html' parser, but we
+// set a different label for it.
+export function determineLabelFromProject(dir: string): string | undefined {
+  function showMessage(
+    libraryName: string,
+    moduleName: string,
+    packageJson: any,
+    currentDir: string,
+  ) {
+    showParserMessage(
+      `Using "${libraryName}" label as package.json containing a "${moduleName}" ${
+        packageJson.dependencies && packageJson.dependencies[moduleName]
+          ? 'dependency'
+          : 'peer dependency'
+      } was found in ${currentDir}`,
+    )
+  }
+
+  let label: string | undefined
+
+  findUp.sync(
+    (currentDir) => {
+      const packageJsonPath = path.join(currentDir, 'package.json')
+
+      if (fs.existsSync(packageJsonPath)) {
+        const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'))
+        if (packageJsonContains(packageJson, 'angular')) {
+          showMessage('Angular', 'angular', packageJson, currentDir)
+          label = 'Angular'
+          return findUp.stop
+        } else if (packageJsonContains(packageJson, 'vue')) {
+          showMessage('Vue', 'vue', packageJson, currentDir)
+          label = 'Vue'
+          return findUp.stop
+        }
+      }
+    },
+    { cwd: dir },
+  )
+
+  return label
 }
 
 async function checkForLegacyConfig(
@@ -296,6 +371,13 @@ async function parseConfig(configFilePath: string, dir: string): Promise<FigmaCo
       }
       // TS errors if this is in an else
       config.codeConnect.parser = parser
+    }
+
+    if (!config.codeConnect?.label) {
+      const label = determineLabelFromProject(dir)
+      if (label) {
+        config.codeConnect.label = label
+      }
     }
 
     return config
@@ -535,8 +617,10 @@ export async function getProjectInfoFromConfig(
   const defaultExcludeGlobs = config.parser
     ? {
         react: ['node_modules/**'],
+        html: ['node_modules/**'],
         swift: [],
         compose: [],
+        custom: [],
         __unit_test__: [],
       }[config.parser] ?? []
     : []
@@ -545,6 +629,10 @@ export async function getProjectInfoFromConfig(
   const excludeGlobs = config.exclude
     ? [...config.exclude, ...defaultExcludeGlobs]
     : defaultExcludeGlobs
+
+  if (config.parser === 'custom' && (!includeGlobs || includeGlobs.length === 0)) {
+    exitWithError('Include globs must specified in config file for custom parsers')
+  }
 
   if (!includeGlobs) {
     exitWithError('No include globs specified in config file')
@@ -587,6 +675,15 @@ export async function getProjectInfo(dir: string, configPath: string): Promise<P
 export function getReactProjectInfo(
   projectInfo: ProjectInfo<CodeConnectReactConfig>,
 ): ReactProjectInfo {
+  const tsProgram = getTsProgram(projectInfo)
+
+  return {
+    ...projectInfo,
+    tsProgram,
+  }
+}
+
+export function getTsProgram(projectInfo: ProjectInfo<CodeConnectConfig>): ts.Program {
   const compilerOptions: ts.CompilerOptions = {
     // This ensures the compiler can resolve imports such as "ui/button" when a
     // baseUrl is configured in the tsconfig of the project. We probably want a more
@@ -595,19 +692,22 @@ export function getReactProjectInfo(
     // TODO: not sure why Node10 is needed her, but otherwise module resolution for
     // pnpm workspaces won't work
     moduleResolution: ts.ModuleResolutionKind.Node10,
-    paths: projectInfo.config.paths ?? {},
+    paths: 'paths' in projectInfo.config ? projectInfo.config.paths ?? {} : {},
     allowJs: true,
   }
 
-  const tsProgram = ts.createProgram(projectInfo.files, compilerOptions)
-
-  return {
-    ...projectInfo,
-    tsProgram,
-  }
+  return ts.createProgram(projectInfo.files, compilerOptions)
 }
 
-export function resolveImportPath(filePath: string, config: CodeConnectReactConfig): string | null {
+/**
+ * Change an imported path for a component like `./button` to e.g `@ui/button`, based on the config file.
+ * Note that `filePath` here is the path to the source file on disk, not the module specifier.
+ *
+ * @param filePath
+ * @param config
+ * @returns
+ */
+export function mapImportPath(filePath: string, config: CodeConnectReactConfig): string | null {
   // Takes the reversed path and pattern parts and check if they match
   function isMatch(patternParts: string[], pathParts: string[]) {
     if (patternParts[0] === '*') {

@@ -1,8 +1,9 @@
-import { ParserError, parse } from '../parser'
 import ts from 'typescript'
 import path from 'path'
 import { CodeConnectReactConfig } from '../../connect/project'
 import { readFileSync } from 'fs'
+import { parseCodeConnect, ParserError } from '../../connect/parser_common'
+import { findAndResolveImports, parseReactDoc, replacePropPlaceholders } from '../parser'
 
 async function testParse(
   file: string,
@@ -20,16 +21,19 @@ async function testParse(
       paths: config?.paths ?? {},
     },
   )
-  return await parse(
+
+  return await parseCodeConnect({
     program,
-    path.join(__dirname, file),
-    { ...config, parser: 'react' },
-    __dirname,
-    {
+    file: path.join(__dirname, file),
+    config: { ...config, parser: 'react' },
+    parseFn: parseReactDoc,
+    resolveImportsFn: findAndResolveImports,
+    absPath: __dirname,
+    parseOptions: {
       repoUrl: 'git@github.com:figma/code-connect.git',
       debug: false,
     },
-  )
+  })
 }
 
 function getExpectedTemplate(name: string) {
@@ -173,7 +177,7 @@ describe('Parser (JS templates)', () => {
     expect(result).toMatchObject([
       {
         templateData: {
-          imports: ["import { Button } from '@lib/ButtonTest'"],
+          imports: ["import { Button } from '@lib/TestComponents'"],
         },
       },
     ])
@@ -403,14 +407,15 @@ describe('Parser (JS templates)', () => {
       {},
     )
 
-    const result = await parse(
-      tsProgram,
-      path.join(__dirname, 'PropsSpread.figma.tsx'),
-      {
+    const result = await parseCodeConnect({
+      program: tsProgram,
+      file: path.join(__dirname, 'PropsSpread.figma.tsx'),
+      config: {
         parser: 'react',
       },
-      __dirname,
-    )
+      absPath: __dirname,
+      parseFn: parseReactDoc,
+    })
 
     expect(result).toMatchObject([
       {
@@ -469,14 +474,15 @@ describe('Parser (JS templates)', () => {
       {},
     )
 
-    const result = await parse(
-      tsProgram,
-      path.join(__dirname, 'PropsSpreadWithDestructuring.figma.tsx'),
-      {
+    const result = await parseCodeConnect({
+      program: tsProgram,
+      file: path.join(__dirname, 'PropsSpreadWithDestructuring.figma.tsx'),
+      config: {
         parser: 'react',
       },
-      __dirname,
-    )
+      absPath: __dirname,
+      parseFn: parseReactDoc,
+    })
 
     expect(result).toMatchObject([
       {
@@ -608,6 +614,33 @@ describe('Parser (JS templates)', () => {
     ])
   })
 
+  it('Handles importing from files with various casings', async () => {
+    const result = await testParse(
+      'ImportsCasings.figma.tsx',
+      ['./components/test_component_underscore.tsx', './components/test-component-kebab.tsx'],
+      {
+        importPaths: {
+          '__test__/*': '@lib',
+        },
+      },
+    )
+
+    expect(result).toMatchObject([
+      {
+        component: 'TestComponentKebab',
+        templateData: {
+          imports: ["import { TestComponentKebab } from '@lib'"],
+        },
+      },
+      {
+        component: 'TestComponentUnderscore',
+        templateData: {
+          imports: ["import { TestComponentUnderscore } from '@lib'"],
+        },
+      },
+    ])
+  })
+
   it('Parses instance and children prop mappings', async () => {
     const result = await testParse('ChildInstances.figma.tsx')
 
@@ -678,5 +711,29 @@ describe('Parser (JS templates)', () => {
     await expect(() => testParse('NoComponentArgOrExampleFunction.figma.tsx')).rejects.toThrowError(
       ParserError,
     )
+  })
+
+  describe('replacePropPlaceholders', () => {
+    it('replaces prop, child, and value placeholders', () => {
+      const result = replacePropPlaceholders(`
+const [isOpen, setIsOpen] = useState(__PROP__("isOpenPropName"))
+const style = {
+  width: __PROP__("widthPropName")
+}
+<MyComponent myProp={__PROP__("myPropName")} style={style}>
+  {__PROP__("childPropName")}
+</MyComponent>
+`)
+
+      expect(result).toEqual(`
+const [isOpen, setIsOpen] = useState(\${_fcc_renderPropValue(isOpenPropName)})
+const style = {
+  width: \${_fcc_renderPropValue(widthPropName)}
+}
+<MyComponent\${_fcc_renderReactProp('myProp', myPropName)} style={style}>
+  \${_fcc_renderReactChildren(childPropName)}
+</MyComponent>
+`)
+    })
   })
 })

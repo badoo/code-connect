@@ -1,6 +1,7 @@
 import { z } from 'zod'
-import { BaseCodeConnectObject } from '../common/figma_connect'
-import { FigmaRestApi } from './figma_rest_api'
+import { ComponentTypeSignature } from '../react/parser'
+import { BaseCodeConnectObject } from './figma_connect'
+import { Intrinsic } from './intrinsics'
 
 export type ParseRequestPayload = {
   mode: 'PARSE'
@@ -114,10 +115,16 @@ export const ParseResponsePayload = z.object({
   messages: ParserExecutableMessages,
 })
 
-export type SupportedMappingType =
-  | FigmaRestApi.ComponentPropertyType.Text
-  | FigmaRestApi.ComponentPropertyType.Boolean
-export type PropMapping = Record<string, { codePropName: string; mapping: SupportedMappingType }>
+export type PropMapping = Record<string, Intrinsic>
+
+export type ComponentPropertyDefinition = {
+  // The property type
+  type: 'BOOLEAN' | 'INSTANCE_SWAP' | 'TEXT' | 'VARIANT'
+  // The default value of this property
+  defaultValue: boolean | string
+  // All possible values for this property. Only exists on VARIANT properties
+  variantOptions?: string[]
+}
 
 export type CreateRequestPayload = {
   mode: 'CREATE'
@@ -135,6 +142,8 @@ export type CreateRequestPayload = {
   sourceExport?: string
   // A mapping of how Figma props should map to code properties
   propMapping?: PropMapping
+  // The type signature for the component (React only)
+  reactTypeSignature?: ComponentTypeSignature
   // Information about the Figma component. This matches the REST API (except the
   // figmaNodeUrl and normalizedName fields), which should make it easier to
   // implement and maintain as we can just pass it through
@@ -152,17 +161,7 @@ export type CreateRequestPayload = {
     // The type of the Figma component
     type: 'COMPONENT' | 'COMPONENT_SET'
     // Map of the Figma component's properties, keyed by property name
-    componentPropertyDefinitions: Record<
-      string,
-      {
-        // The property type
-        type: 'BOOLEAN' | 'INSTANCE_SWAP' | 'TEXT' | 'VARIANT'
-        // The default value of this property
-        defaultValue: boolean | string
-        // All possible values for this property. Only exists on VARIANT properties
-        variantOptions?: string[]
-      }
-    >
+    componentPropertyDefinitions: Record<string, ComponentPropertyDefinition>
   }
   // The configuration object for this parser.
   // Each parser's configuration is separate and can take any shape, though we

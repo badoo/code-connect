@@ -11,3 +11,5 @@ bundle/
 .swiftpm/
 bundle-cli
 webpack-dist
+bundle-npm
+bundle-local

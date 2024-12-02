@@ -1,10 +1,10 @@
 import chalk from 'chalk'
 import { logger } from './logging'
-import { execSync, spawnSync } from 'child_process'
-import axios from 'axios'
+import { execSync } from 'child_process'
 import { compareVersions } from 'compare-versions'
 import { BaseCommand } from '../commands/connect'
 import { Command } from 'commander'
+import { request } from './fetch'
 
 let updatedVersionAvailable: string | false | undefined = undefined
 let message: string | undefined = undefined
@@ -44,8 +44,8 @@ export function withUpdateCheck<T extends BaseCommand>(
 // Start checking for updates in the background. We don't wait for this before
 // running the action, as we will show the result at the end
 function startUpdateCheck() {
-  axios
-    .get('https://api.github.com/repos/figma/code-connect/releases/latest')
+  request
+    .get<{ tag_name: string }>('https://api.github.com/repos/figma/code-connect/releases/latest')
     .then((response) => {
       const latestVersion = response.data.tag_name.replace(/^v/, '')
       const currentVersion = require('../../package.json').version
@@ -93,7 +93,7 @@ function maybeShowUpdateMessage() {
   if (updatedVersionAvailable) {
     logger.warn(`\nA new version of the Figma CLI is available. v${require('../../package.json').version} is currently installed, and the latest version available is v${updatedVersionAvailable}.
 
-To update, run ${chalk.whiteBright('npm install @figma/code-connect@latest')} for React, or ${chalk.whiteBright('npm install -g @figma/code-connect@latest')} for other targets (or if you have Code Connect installed globally).`)
+To update, run ${chalk.whiteBright('npm install @figma/code-connect@latest')} for React or HTML, or ${chalk.whiteBright('npm install -g @figma/code-connect@latest')} for other targets (or if you have Code Connect installed globally).`)
   }
 
   if (message) {

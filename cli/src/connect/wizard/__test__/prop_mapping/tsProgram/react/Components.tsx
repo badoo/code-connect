@@ -1,4 +1,7 @@
-import React, { memo } from 'react'
+import React, { memo, forwardRef, HTMLAttributes } from 'react'
+import { DefinedInDifferentFile } from './Components2'
+import { ReExportedComponent } from './Components2'
+export { AnotherReExportedComponent } from './Components2'
 
 export function LotsOfProps({
   children,
@@ -45,8 +48,32 @@ function NonExportedComponent(props: AliasedComponentProps) {
 
 export const AliasForComponent = NonExportedComponent
 
+export const AliasForComponentInDifferentFile = DefinedInDifferentFile
+
 function UnmemoizedComponent(props: { unmemoized: true }) {
   return <>Hello world</>
 }
 
 export const MemoizedComponent = memo(UnmemoizedComponent)
+
+export const WithForwardRef = forwardRef<HTMLDivElement, { forwarded: true }>((props, ref) => {
+  return <div ref={ref}>Hello world</div>
+})
+
+export { ReExportedComponent, ReExportedComponent as ReExportedComponentAsAlias }
+
+export class ClassComponent extends React.Component<{ classProp: true }> {
+  render() {
+    return <>Hello world</>
+  }
+}
+
+export const WithPickedProps: React.FC<Pick<{ withPickedProps: true }, 'withPickedProps'>> = (
+  props,
+) => null
+
+interface WithExtendsProps extends Omit<HTMLAttributes<HTMLElement>, 'onChange'> {
+  withExtends: true
+}
+
+export const WithExtends: React.FC<WithExtendsProps> = (props) => null

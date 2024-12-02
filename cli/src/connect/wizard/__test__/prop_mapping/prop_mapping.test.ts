@@ -1,119 +1,88 @@
-import path from 'path'
-import { ReactProjectInfo, getProjectInfo, getReactProjectInfo } from '../../../project'
-import { extractSignature, generatePropMapping } from '../../prop_mapping'
+import {
+  MatchableNameTypes,
+  buildMatchableNamesMap,
+  generateValueMapping,
+} from '../../prop_mapping'
 import { FigmaRestApi } from '../../../figma_rest_api'
+import { runPropMappingBenchmarking } from './benchmarking_helpers'
 
 describe('Prop mapping', () => {
-  describe('extractSignature', () => {
-    let projectInfo: ReactProjectInfo
-    let componentsFilepath: string
 
-    beforeEach(async () => {
-      projectInfo = await getProjectInfo(path.join(__dirname, 'tsProgram', 'react'), '').then(
-        (res) => getReactProjectInfo(res as ReactProjectInfo),
-      )
-      componentsFilepath = path.join(__dirname, 'tsProgram', 'react', 'Components.tsx')
-    })
-
-    it('Extracts signature containing a broad set of types', async () => {
-      const result = await extractSignature({
-        nameToFind: 'LotsOfProps',
-        sourceFilePath: componentsFilepath,
-        projectInfo,
+  describe('generateValueMapping', () => {
+    it('creates value mapping using fuzzy matching', () => {
+      const result = generateValueMapping('"input" | "filter" | "single-choice" | "action"', {
+        type: FigmaRestApi.ComponentPropertyType.Variant,
+        defaultValue: 'Filter',
+        variantOptions: [
+          'Action',
+          'Filter',
+          'Filter + badge',
+          'Input',
+          'Input + icon',
+          'Input + img',
+          'Single choice',
+        ],
       })
+
       expect(result).toEqual({
-        children: 'React.ReactNode',
-        onClick: 'React.MouseEventHandler<HTMLDivElement>',
-        title: 'string',
-        hasIcon: 'false | true',
-        count: 'number',
-        anOptionalString: '?string',
-        fuzzyMatchingString: 'string',
-      })
-    })
-
-    it('Extracts signature from a call expression', async () => {
-      const result = await extractSignature({
-        nameToFind: 'MemoizedComponent',
-        sourceFilePath: componentsFilepath,
-        projectInfo,
-      })
-      expect(result).toEqual({
-        unmemoized: 'true',
-      })
-    })
-
-    // TODO fix in Parser
-    // it('Extracts signature from a variable alias', async () => {
-    //   const result = await extractSignature('AliasForComponent', componentsFilepath, projectInfo)
-    //   expect(result).toEqual({
-    //     aliased: 'true',
-    //   })
-    // })
-
-    it('Extracts signature from default export', async () => {
-      const result = await extractSignature({
-        nameToFind: 'default',
-        sourceFilePath: componentsFilepath,
-        projectInfo,
-      })
-      expect(result).toEqual({
-        isDefault: 'true',
+        'Single choice': 'single-choice',
+        Input: 'input',
+        Filter: 'filter',
+        Action: 'action',
       })
     })
   })
 
-  describe('generatePropMapping', () => {
-    let projectInfo: ReactProjectInfo
-    let componentsFilepath: string
-
-    beforeEach(async () => {
-      projectInfo = await getProjectInfo(path.join(__dirname, 'tsProgram', 'react'), '').then(
-        (res) => getReactProjectInfo(res as ReactProjectInfo),
-      )
-      componentsFilepath = path.join(__dirname, 'tsProgram', 'react', 'Components.tsx')
-    })
-
-    it('Generates a prop mapping from a file, export, and Figma component', async () => {
-      const result = await generatePropMapping({
-        exportName: 'LotsOfProps',
-        filepath: componentsFilepath,
-        projectInfo,
-        component: {
-          type: 'COMPONENT',
-          name: 'Lots of props',
-          id: '111:111',
-          children: [],
-          componentPropertyDefinitions: {
-            'Has Icon': {
-              type: FigmaRestApi.ComponentPropertyType.Boolean,
-              defaultValue: false,
-            },
-            Title: {
-              type: FigmaRestApi.ComponentPropertyType.Text,
-              defaultValue: '',
-            },
-            'Fuzzy Match String': {
-              type: FigmaRestApi.ComponentPropertyType.Text,
-              defaultValue: '',
-            },
-          },
-        },
-        cmd: {} as any,
-      })
-      expect(result).toEqual({
+  describe('buildMatchableNamesMap', () => {
+    it('Builds a map of matchable names to their corresponding definitions, adding to array for any collisions', () => {
+      const componentPropertyDefinitions = {
         'Has Icon': {
-          codePropName: 'hasIcon',
-          mapping: 'BOOLEAN',
+          type: FigmaRestApi.ComponentPropertyType.Boolean,
+          defaultValue: false,
         },
-        Title: {
-          codePropName: 'title',
-          mapping: 'TEXT',
+        Action: {
+          type: FigmaRestApi.ComponentPropertyType.Text,
+          defaultValue: '',
         },
-        'Fuzzy Match String': {
-          codePropName: 'fuzzyMatchingString',
-          mapping: 'TEXT',
+        Variant: {
+          type: FigmaRestApi.ComponentPropertyType.Variant,
+          defaultValue: 'Filter',
+          variantOptions: ['Action', 'Filter'],
         },
+      }
+
+      const result = buildMatchableNamesMap(componentPropertyDefinitions)
+      expect(result).toEqual({
+        Action: [
+          {
+            name: 'Action',
+            type: MatchableNameTypes.Property,
+          },
+          {
+            name: 'Action',
+            type: MatchableNameTypes.VariantValue,
+            variantProperty: 'Variant',
+          },
+        ],
+        Filter: [
+          {
+            name: 'Filter',
+            type: MatchableNameTypes.VariantValue,
+            variantProperty: 'Variant',
+          },
+        ],
+        'Has Icon': [
+          {
+            name: 'Has Icon',
+            type: MatchableNameTypes.Property,
+          },
+        ],
+        Variant: [
+          {
+            name: 'Variant',
+            type: MatchableNameTypes.Property,
+          },
+        ],
       })
     })
   })

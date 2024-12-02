@@ -3,8 +3,7 @@ import prompts from 'prompts'
 import fs from 'fs'
 import { exitWithFeedbackMessage, findComponentsInDocument, parseFileKey } from '../helpers'
 import { FigmaRestApi, getApiUrl } from '../figma_rest_api'
-import { exitWithError, logger, success, warn } from '../../common/logging'
-import axios, { isAxiosError } from 'axios'
+import { exitWithError, logger, success } from '../../common/logging'
 import {
   ReactProjectInfo,
   getReactProjectInfo,
@@ -21,7 +20,7 @@ import path from 'path'
 import { CreateRequestPayload, CreateResponsePayload } from '../parser_executable_types'
 import { normalizeComponentName } from '../create'
 import { createReactCodeConnect } from '../../react/create'
-import { CodeConnectJSON } from '../../common/figma_connect'
+import { CodeConnectJSON } from '../../connect/figma_connect'
 import boxen from 'boxen'
 import {
   createCodeConnectConfig,
@@ -29,6 +28,7 @@ import {
   getFilepathExportsFromFiles,
   parseFilepathExport,
   getIncludesGlob,
+  isValidFigmaUrl,
 } from './helpers'
 import stripAnsi from 'strip-ansi'
 import { callParser, handleMessages } from '../parser_executables'
@@ -36,12 +36,12 @@ import ora from 'ora'
 import { z } from 'zod'
 import { fromError } from 'zod-validation-error'
 import { autoLinkComponents } from './autolinking'
-import { generatePropMapping } from './prop_mapping'
+import { extractDataAndGenerateAllPropsMappings } from './prop_mapping_helpers'
+import { isFetchError, request } from '../../common/fetch'
 
 type ConnectedComponentMappings = { componentName: string; filepathExport: string }[]
 
 const NONE = '(None)'
-const DELIMITERS_REGEX = /[\s-_]/g
 
 function clearQuestion(prompt: prompts.PromptObject<string>, answer: string) {
   const displayedAnswer =
@@ -53,6 +53,12 @@ function clearQuestion(prompt: prompts.PromptObject<string>, answer: string) {
 
   process.stdout.moveCursor(0, -rowsToRemove)
   process.stdout.clearScreenDown()
+}
+
+type CliDataResponse = {
+  document: FigmaRestApi.Node
+  componentSets: string[]
+  components: Record<string, { componentSetId: string }>
 }
 
 async function fetchTopLevelComponentsFromFile({
@@ -74,13 +80,16 @@ async function fetchTopLevelComponentsFromFile({
       text: `Fetching component information from ${cmd.verbose ? `${apiUrl}\n` : 'Figma...'}`,
       color: 'green',
     }).start()
+
     const response = await (
       process.env.CODE_CONNECT_MOCK_DOC_RESPONSE
         ? Promise.resolve({
-            status: 200,
-            data: JSON.parse(fs.readFileSync(process.env.CODE_CONNECT_MOCK_DOC_RESPONSE, 'utf-8')),
+            response: { status: 200 },
+            data: JSON.parse(
+              fs.readFileSync(process.env.CODE_CONNECT_MOCK_DOC_RESPONSE, 'utf-8'),
+            ) as CliDataResponse,
           })
-        : axios.get(apiUrl, {
+        : request.get<CliDataResponse>(apiUrl, {
             headers: {
               'X-Figma-Token': accessToken,
               'Content-Type': 'application/json',
@@ -94,27 +103,27 @@ async function fetchTopLevelComponentsFromFile({
       }
     })
 
-    if (response.status === 200) {
+    if (response.response.status === 200) {
       return findComponentsInDocument(response.data.document).filter(
         ({ id }) =>
           id in response.data.componentSets || !response.data.components[id].componentSetId,
       )
     } else {
-      logger.error(`Failed to fetch components from Figma with status: ${response.status}`)
+      logger.error(`Failed to fetch components from Figma with status: ${response.response.status}`)
       logger.debug('Failed to fetch components from Figma with Body:', response.data)
     }
   } catch (err) {
-    if (isAxiosError(err)) {
+    if (isFetchError(err)) {
       if (err.response) {
         logger.error(
-          `Failed to fetch components from Figma (${err.code}): ${err.response?.status} ${
-            err.response?.data?.err ?? err.response?.data?.message
+          `Failed to fetch components from Figma (${err.response.status}): ${err.response.status} ${
+            err.data?.err ?? err.data?.message
           }`,
         )
       } else {
         logger.error(`Failed to fetch components from Figma: ${err.message}`)
       }
-      logger.debug(JSON.stringify(err.response?.data))
+      logger.debug(JSON.stringify(err.data))
     }
     exitWithFeedbackMessage(1)
   }
@@ -437,6 +446,8 @@ async function createCodeConnectFiles({
   outDir: outDirArg,
   projectInfo,
   cmd,
+  accessToken,
+  useAi,
 }: {
   figmaFileUrl: string
   linkedNodeIdsToFilepathExports: Record<string, string>
@@ -444,7 +455,42 @@ async function createCodeConnectFiles({
   outDir: string | null
   projectInfo: ProjectInfo
   cmd: BaseCommand
+  accessToken: string
+  useAi: boolean
 }) {
+  const filepathExportsToComponents = Object.entries(linkedNodeIdsToFilepathExports).reduce(
+    (map, [nodeId, filepathExport]) => {
+      map[filepathExport] = unconnectedComponentsMap[nodeId]
+      return map
+    },
+    {} as Record<string, FigmaRestApi.Component>,
+  )
+
+  let embeddingsFetchSpinner: ora.Ora | null = null
+
+  if (useAi) {
+    embeddingsFetchSpinner = ora({
+      text: 'Computing embeddings...',
+      color: 'green',
+    }).start()
+  }
+
+  const propMappingsAndData =
+    projectInfo.config.parser === 'react'
+      ? await extractDataAndGenerateAllPropsMappings({
+          filepathExportsToComponents,
+          projectInfo,
+          cmd,
+          figmaUrl: figmaFileUrl,
+          accessToken,
+          useAi,
+        })
+      : null
+
+  if (embeddingsFetchSpinner) {
+    embeddingsFetchSpinner.stop()
+  }
+
   for (const [nodeId, filepathExport] of Object.entries(linkedNodeIdsToFilepathExports)) {
     const urlObj = new URL(figmaFileUrl)
     urlObj.search = ''
@@ -460,16 +506,8 @@ async function createCodeConnectFiles({
       destinationDir: outDir,
       sourceFilepath: filepath,
       sourceExport: exportName || undefined,
-      propMapping:
-        projectInfo.config.parser === 'react' && filepath && exportName
-          ? generatePropMapping({
-              filepath,
-              exportName,
-              projectInfo: projectInfo as ReactProjectInfo,
-              component: unconnectedComponentsMap[nodeId],
-              cmd,
-            })
-          : undefined,
+      reactTypeSignature: propMappingsAndData?.propMappingData[filepathExport]?.signature,
+      propMapping: propMappingsAndData?.propMappings[filepathExport],
       component: {
         figmaNodeUrl: urlObj.toString(),
         normalizedName: normalizeComponentName(name),
@@ -500,9 +538,7 @@ async function createCodeConnectFiles({
 
     const { hasErrors } = handleMessages(result.messages)
 
-    if (hasErrors) {
-      exitWithError('Errors encountered calling parser, exiting')
-    } else {
+    if (!hasErrors) {
       result.createdFiles.forEach((file) => {
         logger.info(success(`Created ${file.filePath}`))
       })
@@ -541,7 +577,7 @@ export async function getUnconnectedComponentsAndConnectedComponentMappings(
   const dir = getDir(cmd)
   const fileKey = parseFileKey(figmaFileUrl)
 
-  const codeConnectObjects = await getCodeConnectObjects(dir, cmd, projectInfo, true)
+  const codeConnectObjects = await getCodeConnectObjects(cmd, projectInfo, true)
 
   const connectedNodeIdsInFileToCodeConnectObjectMap = codeConnectObjects.reduce(
     (map, codeConnectJson) => {
@@ -694,6 +730,12 @@ export async function runWizard(cmd: BaseCommand) {
   const dir = getDir(cmd)
   const { hasConfigFile, config } = await parseOrDetermineConfig(dir, cmd.config)
 
+  // This isn't ideal as you see the intro text followed by an error, but we'll
+  // add support for this soon so I think it's OK
+  if (config.parser === 'html') {
+    exitWithError('HTML projects are currently not supported by Code Connect interactive setup')
+  }
+
   let accessToken = getAccessToken(cmd)
 
   if (!accessToken) {
@@ -721,7 +763,7 @@ export async function runWizard(cmd: BaseCommand) {
     type: 'text',
     message: 'What is the URL of the Figma file containing your design system library?',
     name: 'figmaFileUrl',
-    validate: (value: string) => !!parseFileKey(value) || 'Please enter a valid Figma file URL.',
+    validate: (value: string) => isValidFigmaUrl(value) || 'Please enter a valid Figma file URL.',
   })
 
   const componentsFromFile = await fetchTopLevelComponentsFromFile({
@@ -754,6 +796,29 @@ export async function runWizard(cmd: BaseCommand) {
     if (createConfigFile === 'yes') {
       await createCodeConnectConfig({ dir, componentDirectory, config })
     }
+  }
+
+  let useAi = false
+
+  if (projectInfo.config.parser === 'react') {
+    const { useAi: useAiSelection } = await askQuestionOrExit({
+      type: 'select',
+      name: 'useAi',
+      message:
+        'Code Connect offers AI support for accurate prop mapping between Figma and code components. Data is used only for mapping and is not stored or used for training. To learn more, visit https://help.figma.com/hc/en-us/articles/23920389749655-Code-Connect',
+      choices: [
+        {
+          title: 'Do not use AI for prop mapping (default)',
+          value: 'no',
+        },
+        {
+          title: 'Use AI for prop mapping',
+          value: 'yes',
+        },
+      ],
+    })
+
+    useAi = useAiSelection === 'yes'
   }
 
   const linkedNodeIdsToFilepathExports = {}
@@ -822,5 +887,7 @@ export async function runWizard(cmd: BaseCommand) {
     outDir,
     projectInfo,
     cmd,
+    accessToken,
+    useAi,
   })
 }

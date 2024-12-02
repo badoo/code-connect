@@ -1,3 +1,134 @@
+# Code Connect v1.2.2 (5th November 2024)
+
+## Features
+
+### General
+- Added support to create Custom parsers. Those allow users to add support for languages which aren't natively supported by Code Connect. Check the [documentation](https://github.com/figma/code-connect/blob/main/docs/custom.md) for more details.
+
+## Fixed
+
+### React
+- Only show AI question for React
+- Fix error in autolinking in reduce function
+
+# Code Connect v1.2.1 (23rd October 2024)
+
+### General
+- Added a `--exit-on-unreadable-files` flag to all commands to exit if any Code Connect files cannot be parsed. We recommend using this option for CI/CD.
+
+## Fixed
+
+### React
+- Fixed a bug introduced in 1.2.0 where `nestedProps` referencing a hidden layer would result in an error rendering Code Connect
+
+### SwiftUI
+- Fixed potential "index is out of bounds" error.
+
+### General
+- Changed how the extension makes HTTP requests to resolve issues when connecting through a proxy. Please [submit a support ticket](https://help.figma.com/hc/en-us/requests/new?ticket_form_id=360001744374) if you continue to have connection issues after this update.
+
+### Compose
+
+- Fixed some parsing errors when running the `create` and `publish` commands
+
+# Code Connect v1.2.0
+
+## Features
+
+### General
+- The interactive setup now offers AI support for accurate prop mapping between Figma and code components. Users will now be given the option to use AI during the setup process, which if chosen will assist in creating Code Connect files and attempting to accurately map your code to Figma properties.
+
+  Data is used only for mapping and is not stored or used for training. To learn more, visit https://help.figma.com/hc/en-us/articles/23920389749655-Code-Connect
+
+### React
+- Added support for returning strings or React components from the `example` function, in addition to JSX
+- Added `getProps` on `figma.instance()` which can be used to access props of a nested connected component
+- Added `render` on `figma.instance()` which can be used to render a nested connected component dynamically
+- Added support for including any custom props in the `props` object, that can be accessed with `getProps` in a parent component
+
+## Fixed
+
+### HTML
+- Case of attribute names is now preserved to support Angular (fixes https://github.com/figma/code-connect/issues/172)
+- Fixed a bug with `nestedProps` (fixes https://github.com/figma/code-connect/issues/176)
+
+## Fixed
+
+# Code Connect v1.1.4 (26th September 2024)
+
+## Fixed
+
+### React
+- Fixed a Prettier bug with the interactive setup
+- Removed empty enum mappings from generated Code Connect in interactive setup
+- Fixed an issue with props not rendering correctly in the Figma UI if used in the body of a component (e.g. as a hook argument). Any Code Connect with this issue will need republishing to be fixed. (fixes https://github.com/figma/code-connect/issues/167)
+- Support mapping from an enum value to a boolean prop in CLI Assistant
+
+## Features
+
+### Compose
+- The dependencies required to author Code Connect files now live in a separate module from the plugin and are hosted on Maven Central. Refer to the [documentation](docs/compose.md) for updated instructions on adding Code Connect to your project.
+
+### SwiftUI
+- Updated the swift-syntax dependency to include 600.0.0 (Swift 6)
+
+# Code Connect v1.1.3 (11th September 2024)
+
+## Fixed
+
+### HTML
+- Fixed an issue where `imports` was incorrectly not included in the TypeScript interface
+- Added a note in the [documentation](docs/html.md) that HTML support requires `moduleResolution: "NodeNext"`
+
+### React
+- Fixed an issue where `imports` was incorrectly not included in the TypeScript interface (fixes https://github.com/figma/code-connect/issues/159)
+
+## Features
+
+### React
+- Code Connect files created in the CLI assistant will now start try to use auto-generated prop mappings in the component props. This is an early feature and support for different types is limited.
+
+# Code Connect v1.1.2 (10th September 2024)
+
+## Fixed
+
+### React
+- Fixed an issue with `client` export used by the icon script (fixes https://github.com/figma/code-connect/issues/156)
+
+# Code Connect v1.1.1 (10th September 2024)
+
+## Fixed
+
+### General
+- Fixed an issue where the `@figma/code-connect@1.1.0` npm package had an incorrect README
+
+# Code Connect v1.1.0 (10th September 2024)
+
+## Features
+
+### HTML
+- Added support for documenting HTML-based frameworks (including Web Components, Angular and Vue), using the new `html` parser. See the [documentation](docs/html.md) for more information.
+
+  HTML support for Code Connect is in preview, and the API is liable to change during this period. Please let us know your feedback via [GitHub Issues](https://github.com/figma/code-connect/issues/new/choose).
+
+### SwiftUI
+- Added a `swiftPackagePath` configuration option to specify a custom path to a `Package.swift` file to run Code Connect from.
+
+### React
+- Code Connect files created in the CLI assistant will now start including some auto-generated prop mappings between Figma properties and linked code props. This is an early feature and support for different prop types is limited.
+
+### General
+
+- Restructured the Code Connect documentation. All documentation can now be found in the [docs](docs) directory.
+
+## Fixed
+
+### React
+- `figma.nestedProps` can now be used in conjunction with `figma.boolean` for conditionally hidden nested instances (fixes https://github.com/figma/code-connect/issues/118, https://github.com/figma/code-connect/issues/89)
+- Fixed an issue where backticks could not be used in the example code (fixes https://github.com/figma/code-connect/issues/139)
+- Fixed an issue with wildcard paths in import mappings
+- Fixed an error when trying to use the icon script with component sets
+
 # Code Connect v1.0.6 (21st August 2024)
 
 ## Fixed
@@ -6,7 +137,6 @@
 - Fixed issue where props with special characters such as hyphens would not render properly. (https://github.com/figma/code-connect/issues/116)
 
 ## Features
-
 
 ### React
 - figma.enum now supports floating point numbers
@@ -154,10 +284,10 @@
 
 ### React
 
-- Added support for [nested properties](cli/README.md#nested-properties), using `figma.nestedProps`
-- Added support for [concatenating strings for CSS class names](cli/README.md#classname), using `figma.className`
-- Added support for [text content from layers](cli/README.md#text-content), using `figma.textContent`
-- Added support for [wildcards](cli/README.md#wildcard-match) with `figma.children`
+- Added support for [nested properties](docs/react.md#nested-properties), using `figma.nestedProps`
+- Added support for [concatenating strings for CSS class names](docs/react.md#classname), using `figma.className`
+- Added support for [text content from layers](docs/react.md#text-content), using `figma.textContent`
+- Added support for [wildcards](docs/react.md#wildcard-match) with `figma.children`
 
 ### SwiftUI
 

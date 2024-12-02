@@ -7,11 +7,12 @@ import {
   ReactProjectInfo,
   getDefaultConfigPath,
 } from '../project'
-import { logger, success } from '../../common/logging'
+import { exitWithError, logger, success } from '../../common/logging'
 import path from 'path'
 import prompts, { Choice } from 'prompts'
-import { isFigmaConnectFile } from '../../react/parser'
 import { BaseCommand } from '../../commands/connect'
+import { isFigmaConnectFile } from '../parser_common'
+import { parseFileKey } from '../helpers'
 
 export function maybePrefillWizardQuestionsForTesting() {
   if (process.env.JEST_WORKER_ID && process.env.WIZARD_ANSWERS_TO_PREFILL) {
@@ -41,6 +42,9 @@ export function getIncludesGlob({
   if (componentDirectory) {
     // use unix separators for config file globs
     const pathToComponentsDir = path.relative(dir, componentDirectory).replaceAll(path.sep, '/')
+    if (config.parser === 'custom') {
+      return []
+    }
     return DEFAULT_INCLUDE_GLOBS_BY_PARSER[config.parser].map(
       (defaultIncludeGlob) => `${pathToComponentsDir}/${defaultIncludeGlob}`,
     )
@@ -92,7 +96,7 @@ export function parseFilepathExport(filepathExport: string) {
   }
 }
 
-function getFilepathExport(filepath: string, exp: string) {
+export function getFilepathExport(filepath: string, exp: string) {
   return `${filepath}${FILEPATH_EXPORT_DELIMITER}${exp}`
 }
 
@@ -129,24 +133,27 @@ export function getFilepathExportsFromFiles(projectInfo: ProjectInfo, cmd: BaseC
   return projectInfo.files.reduce((options, filepath) => {
     if (projectInfo.config.parser === 'react') {
       const { tsProgram } = projectInfo as ReactProjectInfo
-      if (!isFigmaConnectFile(tsProgram, filepath)) {
+      if (!isFigmaConnectFile(tsProgram, filepath, 'tsx')) {
         const checker = tsProgram.getTypeChecker()
         const sourceFile = tsProgram.getSourceFile(filepath)
         if (!sourceFile) {
-          throw new Error(`Could not parse file ${filepath}`)
-        }
-        try {
-          const sourceFileSymbol = checker.getSymbolAtLocation(sourceFile)!
-          const exports = checker.getExportsOfModule(sourceFileSymbol)
-
-          exports.forEach((exp) => {
-            options.push(getFilepathExport(filepath, exp.getName()))
-          })
-        } catch (e) {
           if (cmd.verbose) {
-            logger.warn(`Could not get exports from ${filepath}`)
+            logger.warn(`Could not parse file for TypeScript: ${filepath}`)
           }
-          // ignore invalid files
+        } else {
+          try {
+            const sourceFileSymbol = checker.getSymbolAtLocation(sourceFile)!
+            const exports = checker.getExportsOfModule(sourceFileSymbol)
+
+            exports.forEach((exp) => {
+              options.push(getFilepathExport(filepath, exp.getName()))
+            })
+          } catch (e) {
+            if (cmd.verbose) {
+              logger.warn(`Could not parse exports of file: ${filepath}`)
+            }
+            // ignore invalid files
+          }
         }
       }
     } else {
@@ -154,4 +161,19 @@ export function getFilepathExportsFromFiles(projectInfo: ProjectInfo, cmd: BaseC
     }
     return options
   }, [] as string[])
+}
+
+export function isValidFigmaUrl(url: string) {
+  try {
+    const { hostname } = new URL(url)
+    if (
+      !hostname.includes('figma.com')
+    ) {
+      return false
+    }
+
+    return !!parseFileKey(url)
+  } catch (e) {
+    return false
+  }
 }

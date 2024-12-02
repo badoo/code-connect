@@ -6,7 +6,12 @@ import {
   getProjectInfo,
   getReactProjectInfo,
 } from '../../project'
-import { getIncludesGlob, getComponentOptionsMap, getFilepathExportsFromFiles } from '../helpers'
+import {
+  getIncludesGlob,
+  getComponentOptionsMap,
+  getFilepathExportsFromFiles,
+  isValidFigmaUrl,
+} from '../helpers'
 
 describe('getIncludesGlob', () => {
   it('returns default includes glob if no component directory', () => {
@@ -78,21 +83,40 @@ describe('getComponentOptionsMap', () => {
 })
 
 describe('getFilepathExportsFromFiles', () => {
-  let projectInfo: ProjectInfo
-  beforeEach(async () => {
-    projectInfo = await getProjectInfo(path.join(__dirname, 'tsProgram', 'react'), '').then((res) =>
-      getReactProjectInfo(res as ReactProjectInfo),
-    )
-  })
-
-  it('generates list of file component keys from ProjectInfo', () => {
+  it('generates list of file component keys from ProjectInfo, ignoring unsupported files', async () => {
+    const projectInfo = await getProjectInfo(
+      path.join(__dirname, 'tsProgram', 'react'),
+      path.join(__dirname, 'tsProgram', 'react', 'figma.config.json'),
+    ).then((res) => getReactProjectInfo(res as ReactProjectInfo))
     const result = getFilepathExportsFromFiles(projectInfo, {} as any)
     expect(result.map((filepath) => path.parse(filepath).base)).toEqual([
+      'plain_js_file.jsx~PlainOldJsComponent',
       'MyComponent.tsx~MyComponent',
       'MyComponent.tsx~MyComponentProps', // TODO ideally we'd filter out by type here
       'MultipleComponents.tsx~default',
       'MultipleComponents.tsx~AnotherComponent1',
       'MultipleComponents.tsx~AnotherComponent2',
     ])
+  })
+})
+
+describe('isValidFigmaUrl', () => {
+  it('works as expected', () => {
+    const shouldPass = [
+      'https://www.figma.com/file/1234567890/My-File',
+      'https://figma.com/file/1234567890/My-File',
+      'https://figma.com/design/1234567890/My-File',
+    ]
+    shouldPass.forEach((url) => {
+      expect(isValidFigmaUrl(url)).toBe(true)
+    })
+    const shouldFail = [
+      'https://www.something.com/file/1234567890/My-File',
+      'https://figma.com/file',
+      'https://something.com/https://figma.com/design/1234567890/My-File',
+    ]
+    shouldFail.forEach((url) => {
+      expect(isValidFigmaUrl(url)).toBe(false)
+    })
   })
 })

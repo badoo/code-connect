@@ -1,4 +1,4 @@
-import { readFileSync, stat } from 'fs'
+import { readFileSync } from 'fs'
 import {
   bfsFindNode,
   convertObjectLiteralToJs,
@@ -6,12 +6,10 @@ import {
   parsePropertyOfType,
 } from '../typescript/compiler'
 import {
-  ParserContext,
-  ParserError,
   parseComponentMetadata,
-  InternalError,
-  parseRenderFunction,
+  parseJSXRenderFunction,
   getDefaultTemplate,
+  findAndResolveImports,
 } from '../react/parser'
 import {
   CodeConnectReactConfig,
@@ -20,11 +18,12 @@ import {
   getStorybookUrl,
 } from '../connect/project'
 import { logger } from '../common/logging'
-import { CodeConnectJSON } from '../common/figma_connect'
+import { CodeConnectJSON } from '../connect/figma_connect'
 import ts from 'typescript'
-import { FigmaConnectMeta } from '../common/api'
+import { FigmaConnectMeta } from '../connect/api'
 import { minimatch } from 'minimatch'
-import { parsePropsObject } from '../common/intrinsics'
+import { parsePropsObject } from '../connect/intrinsics'
+import { InternalError, ParserContext, ParserError } from '../connect/parser_common'
 
 interface ConvertStorybookFilesArgs {
   /**
@@ -100,11 +99,12 @@ async function convertStorybookFile({
     config,
     sourceFile,
     absPath,
+    resolvedImports: findAndResolveImports(tsProgram, sourceFile),
   }
 
   let source = readFileSync(path).toString()
   // Replace backticks with ' as csf-tools can't parse dynamic titles
-  source = source.replace(/title: `(.*)`/g, (match, title) => {
+  source = source.replace(/title: `(.*)`/g, (_, title) => {
     return `title: '${title}'`
   })
 
@@ -126,8 +126,7 @@ async function convertStorybookFile({
       return
     }
 
-    const { figmaStoryMetadata, componentDeclaration, propMappings, mappedProps, examples } =
-      parseResult
+    const { figmaStoryMetadata, componentDeclaration, propMappings, examples } = parseResult
 
     const componentMetadata = await parseComponentMetadata(componentDeclaration, parserContext)
 
@@ -210,7 +209,7 @@ async function convertStorybookFile({
         )
       }
 
-      let render = parseRenderFunction(statementToParse, parserContext, propMappings)
+      let render = parseJSXRenderFunction(statementToParse, parserContext, propMappings)
 
       if (!render) {
         continue
@@ -231,14 +230,6 @@ async function convertStorybookFile({
     logger.error(`Error parsing story ${path}: ${e}`)
     throw e
   }
-}
-
-type AnyJsxElement = ts.JsxElement | ts.JsxSelfClosingElement | ts.JsxFragment
-
-function isJsxElement(
-  node: ts.Node,
-): node is AnyJsxElement | ts.JsxSelfClosingElement | ts.JsxFragment {
-  return ts.isJsxElement(node) || ts.isJsxSelfClosingElement(node) || ts.isJsxFragment(node)
 }
 
 /**

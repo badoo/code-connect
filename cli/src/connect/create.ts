@@ -4,9 +4,8 @@ import {
   parseFileKey,
   parseNodeIds,
 } from './helpers'
-import axios, { isAxiosError } from 'axios'
 import fs from 'fs'
-import { getApiUrl, getHeaders } from './figma_rest_api'
+import { FigmaRestApi, getApiUrl, getHeaders } from './figma_rest_api'
 import { exitWithError, logger } from '../common/logging'
 import { callParser, handleMessages } from './parser_executables'
 import { CodeConnectExecutableParserConfig, ProjectInfo } from './project'
@@ -14,6 +13,8 @@ import { createReactCodeConnect } from '../react/create'
 import { z } from 'zod'
 import { CreateRequestPayload, CreateResponsePayload } from './parser_executable_types'
 import { fromError } from 'zod-validation-error'
+import { createHtmlCodeConnect } from '../html/create'
+import { isFetchError, request } from '../common/fetch'
 interface GenerateDocsArgs {
   accessToken: string
   figmaNodeUrl: string
@@ -59,18 +60,21 @@ export async function createCodeConnectFromUrl({
     logger.info('Fetching component information from Figma...')
     const response = process.env.CODE_CONNECT_MOCK_CREATE_API_RESPONSE
       ? {
-          status: 200,
+          response: { status: 200 },
           data: JSON.parse(
             fs.readFileSync(process.env.CODE_CONNECT_MOCK_CREATE_API_RESPONSE, 'utf-8'),
-          ),
+          ) as { document: FigmaRestApi.Node },
         }
-      : await axios.get(apiUrl, {
+      : await request.get<{ document: FigmaRestApi.Node }>(apiUrl, {
           headers: getHeaders(accessToken),
         })
 
-    if (response.status === 200) {
+    if (response.response.status === 200) {
       logger.info('Parsing response')
       const component = findComponentsInDocument(response.data.document, nodeIds)[0]
+      if (component === undefined) {
+        exitWithError('Could not find a component in the provided URL')
+      }
       const normalizedName = normalizeComponentName(component.name)
 
       const payload: CreateRequestPayload = {
@@ -94,6 +98,8 @@ export async function createCodeConnectFromUrl({
 
       if (projectInfo.config.parser === 'react') {
         result = await createReactCodeConnect(payload)
+      } else if (projectInfo.config.parser === 'html') {
+        result = await createHtmlCodeConnect(payload)
       } else {
         try {
           const stdout = await callParser(
@@ -121,19 +127,21 @@ export async function createCodeConnectFromUrl({
         logger.info(`${file.filePath}`)
       })
     } else {
-      logger.error(`Failed to get node information from Figma with status: ${response.status}`)
+      logger.error(
+        `Failed to get node information from Figma with status: ${response.response.status}`,
+      )
       logger.debug('Failed to get node information from Figma with Body:', response.data)
     }
   } catch (err) {
-    if (isAxiosError(err)) {
+    if (isFetchError(err)) {
       if (err.response) {
         logger.error(
-          `Failed to get node data from Figma (${err.code}): ${err.response?.status} ${err.response?.data?.err ?? err.response?.data?.message}`,
+          `Failed to get node data from Figma (${err.response.status}): ${err.response.status} ${err.data?.err ?? err.data?.message}`,
         )
       } else {
         logger.error(`Failed to get node data from Figma: ${err.message}`)
       }
-      logger.debug(JSON.stringify(err.response?.data))
+      logger.debug(JSON.stringify(err.data))
     } else {
       logger.error(`Failed to create: ${err}`)
     }
