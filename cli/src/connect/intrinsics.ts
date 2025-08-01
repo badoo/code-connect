@@ -3,6 +3,8 @@ import { InternalError, ParserContext, ParserError } from './parser_common'
 import {
   assertIsArrayLiteralExpression,
   assertIsStringLiteral,
+  convertArrayLiteralToJs,
+  isUndefinedType,
   stripQuotesFromNode,
 } from '../typescript/compiler'
 import { convertObjectLiteralToJs } from '../typescript/compiler'
@@ -10,6 +12,7 @@ import { assertIsObjectLiteralExpression } from '../typescript/compiler'
 import { FigmaConnectAPI } from './api'
 import {
   FCCValue,
+  _fcc_array,
   _fcc_function,
   _fcc_identifier,
   _fcc_jsxElement,
@@ -469,6 +472,8 @@ export function valueToString(value: ValueMappingKind, childLayer?: string) {
       return `_fcc_templateString('${v}')`
     case 'jsx-element':
       return `_fcc_jsxElement('${v}')`
+    case 'array':
+      return `_fcc_array(${v})`
     default:
       throw new InternalError(`Unknown helper type: ${value}`)
   }
@@ -505,7 +510,9 @@ export function intrinsicToString(
       // `const propName = figma.properties.instance('propName')`
       if (modifiers.length > 0) {
         const instance = `${selector}.__properties__.__instance__('${args.figmaPropName}')`
-        return [instance, ...modifiers.map(modifierToString)].join('.')
+        let body = `const instance = ${instance}\n`
+        body += `return instance && instance.type !== "ERROR" ? ${['instance', ...modifiers.map(modifierToString)].join('.')} : instance`
+        return `(function () {${body}})()`
       }
       return `${selector}.__properties__.instance('${args.figmaPropName}')`
     }
@@ -555,10 +562,21 @@ ${Object.entries(args.props).map(
   }
 }
 
+/**
+ * Converts an expression to an FCC value, which is a wrapper around the actual value that
+ * includes the type information. This is used to serialize the value to JSON and then
+ * deserialize it back to the correct type in the generated code.
+ *
+ * @param valueNode
+ * @param parserContext
+ * @returns
+ */
 function expressionToFccEnumValue(
   valueNode: ts.Expression,
   parserContext: ParserContext,
 ): FCCValue {
+  const { sourceFile, checker } = parserContext
+
   if (ts.isParenthesizedExpression(valueNode)) {
     return expressionToFccEnumValue(valueNode.expression, parserContext)
   }
@@ -576,12 +594,30 @@ function expressionToFccEnumValue(
     return _fcc_object(parsePropsObject(valueNode, parserContext))
   }
 
+  if (ts.isArrayLiteralExpression(valueNode)) {
+    return _fcc_array(
+      convertArrayLiteralToJs(valueNode, sourceFile, checker, (valueNode) => {
+        if (ts.isCallExpression(valueNode)) {
+          return parseIntrinsic(valueNode, parserContext)
+        }
+        return expressionToFccEnumValue(valueNode, parserContext)
+      }),
+    )
+  }
+
   if (ts.isTemplateLiteral(valueNode)) {
     const str = valueNode.getText().replaceAll('`', '')
     return _fcc_templateString(str)
   }
 
+  // Handles enums, for example `MyEnum.Value`
   if (ts.isPropertyAccessExpression(valueNode)) {
+    return _fcc_identifier(valueNode.getText())
+  }
+
+  // Any other identifiers (except undefined) are treated as React components, for example `MyComponent`.
+  // We don't support referencing other variables in props object so this should be fine.
+  if (ts.isIdentifier(valueNode) && !isUndefinedType(valueNode, parserContext.checker)) {
     return _fcc_identifier(valueNode.getText())
   }
 

@@ -8,22 +8,28 @@ describe('e2e test for `parse` command custom parsers', () => {
     const testPath = path.join(__dirname, `e2e_parse_command/${testName}`)
     const json = JSON.parse(result.stdout)
 
-    expect(json).toMatchObject([
-      {
-        figmaNode: `${path.join(testPath, 'Test.test')}`,
-        template:
-          '{"config":{"parser":"custom","parserCommand":"node parser/custom_parser.js","include":["*.test"],"exclude":["Excluded.test"]},"mode":"PARSE"}',
-        label: 'Test',
-        source: `https://github.com/figma/code-connect/blob/main/cli/src/connect/__test__/e2e/e2e_parse_command/${testName}/Test.test`,
-      },
-      {
-        figmaNode: `${path.join(testPath, 'OtherFile.test')}`,
-        template:
-          '{"config":{"parser":"custom","parserCommand":"node parser/custom_parser.js","include":["*.test"],"exclude":["Excluded.test"]},"mode":"PARSE"}',
-        label: 'Test',
-        source: `https://github.com/figma/code-connect/blob/main/cli/src/connect/__test__/e2e/e2e_parse_command/${testName}/OtherFile.test`,
-      },
-    ])
+    expect(json).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          figmaNode: `${path.join(testPath, 'Test.test')}`,
+          template:
+            '{"config":{"parser":"custom","parserCommand":"node parser/custom_parser.js","include":["*.test"],"exclude":["Excluded.test"]},"mode":"PARSE"}',
+          label: 'Test',
+          source: expect.stringMatching(
+            /https:\/\/github\.com\/figma\/[a-z-/]+\/cli\/src\/connect\/__test__\/e2e\/e2e_parse_command\/\w+\/Test\.test/,
+          ),
+        }),
+        expect.objectContaining({
+          figmaNode: `${path.join(testPath, 'OtherFile.test')}`,
+          template:
+            '{"config":{"parser":"custom","parserCommand":"node parser/custom_parser.js","include":["*.test"],"exclude":["Excluded.test"]},"mode":"PARSE"}',
+          label: 'Test',
+          source: expect.stringMatching(
+            /https:\/\/github\.com\/figma\/[a-z-/]+\/cli\/src\/connect\/__test__\/e2e\/e2e_parse_command\/\w+\/OtherFile\.test/,
+          ),
+        }),
+      ]),
+    )
   }
 
   it('successfully calls a custom parser executable', async () => {
@@ -36,6 +42,7 @@ describe('e2e test for `parse` command custom parsers', () => {
 
     expect(tidyStdOutput(result.stderr)).toBe(
       `Config file found, parsing ./e2e_parse_command/custom_parser using specified include globs
+Using custom parser command: node parser/custom_parser.js
 Running parser: node parser/custom_parser.js
 Debug message from parser!
 Success from parser!`,
@@ -54,6 +61,7 @@ Success from parser!`,
 
     expect(tidyStdOutput(result.stderr)).toBe(
       `Config file found, parsing ./e2e_parse_command/custom_parser_warning using specified include globs
+Using custom parser command: node parser/custom_parser.js
 Warning from parser!`,
     )
 
@@ -72,6 +80,7 @@ Warning from parser!`,
       expect(e.code).toBe(1)
       expect(tidyStdOutput(e.stderr)).toBe(
         `Config file found, parsing ./e2e_parse_command/custom_parser_error using specified include globs
+Using custom parser command: node parser/custom_parser.js
 Error from parser!
 Errors encountered calling parser, exiting`,
       )
@@ -90,6 +99,7 @@ Errors encountered calling parser, exiting`,
       expect(e.code).toBe(1)
       expect(tidyStdOutput(e.stderr)).toBe(
         `Config file found, parsing ./e2e_parse_command/custom_parser_invalid_response using specified include globs
+Using custom parser command: node parser/custom_parser.js
 Error returned from parser: Validation error: Required at "docs[0].figmaNode"; Required at "docs[0].template"; Required at "docs[0].templateData"; Required at "docs[0].language"; Required at "docs[0].label". Try re-running the command with --verbose for more information.`,
       )
     }

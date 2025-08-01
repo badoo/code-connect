@@ -11,6 +11,7 @@ import findUp from 'find-up'
 import { exitWithFeedbackMessage } from './helpers'
 
 const DEFAULT_CONFIG_FILE_NAME = 'figma.config.json'
+const ENV_FILE_NAME = '.env'
 
 export const DEFAULT_INCLUDE_GLOBS_BY_PARSER = {
   react: [`**/*.{tsx,jsx}`],
@@ -20,6 +21,11 @@ export const DEFAULT_INCLUDE_GLOBS_BY_PARSER = {
   // include globs should be included in configs for custom parsers
   custom: undefined,
   __unit_test__: [''],
+}
+
+export const DEFAULT_LABEL_PER_PARSER: Partial<Record<CodeConnectParser, string>> = {
+  react: 'React',
+  html: 'Web Components',
 }
 
 // First party parsers which call into parser executables
@@ -53,12 +59,16 @@ export type BaseCodeConnectConfig = {
    * The parser name, if using an internal parser.
    */
   parser: CodeConnectParser
-  // TODO add parserCommand for third party parsers
 
   /**
    * Label to use for the uploaded code examples
    */
   label?: string
+
+  /**
+   * The URL of the Figma file to use during the interactive setup wizard for connecting code components to Figma components.
+   */
+  interactiveSetupFigmaFileUrl?: string
 
   /**
    * Path to the custom Swift parser CLI
@@ -153,7 +163,8 @@ function showParserMessage(message: string) {
 function packageJsonContains(packageJson: any, dependency: string) {
   return (
     (packageJson.dependencies && packageJson.dependencies[dependency]) ||
-    (packageJson.peerDependencies && packageJson.peerDependencies[dependency])
+    (packageJson.peerDependencies && packageJson.peerDependencies[dependency]) ||
+    (packageJson.devDependencies && packageJson.devDependencies[dependency])
   )
 }
 
@@ -198,6 +209,12 @@ function determineParserFromProject(dir: string): CodeConnectParser | undefined 
         } else if (globSync([`${currentDir}/build.gradle.kts`]).length > 0) {
           showParserMessage(
             `Using "compose" parser as a file matching build.gradle.kts was found in ${currentDir}`,
+          )
+          parser = 'compose'
+          return findUp.stop
+        } else if (globSync([`${currentDir}/build.gradle`]).length > 0) {
+          showParserMessage(
+            `Using "compose" parser as a file matching build.gradle was found in ${currentDir}`,
           )
           parser = 'compose'
           return findUp.stop
@@ -460,7 +477,7 @@ export function getGitRepoDefaultBranchName(repoPath: string) {
 /**
  * Finds the URL of a remote file
  * @param filePath absolute file path on disk
- * @param repoURL remote URL
+ * @param repoURL remote URL, can be a GitHub, GitLab, Bitbucket, etc. URL.
  * @returns
  */
 export function getRemoteFileUrl(filePath: string, repoURL?: string) {
@@ -492,7 +509,28 @@ export function getRemoteFileUrl(filePath: string, repoURL?: string) {
 
   const relativeFilePath = filePath.substring(index + repoAbsPath.length)
 
-  return `${url}/blob/${defaultBranch}${relativeFilePath}`
+  if (url.includes('github.com')) {
+    return `${url}/blob/${defaultBranch}${relativeFilePath}`
+  } else if (url.includes('gitlab.com')) {
+    return `${url}/-/blob/${defaultBranch}${relativeFilePath}`
+  } else if (url.includes('bitbucket.org')) {
+    return `${url}/src/${defaultBranch}${relativeFilePath}`
+  } else if (url.includes('dev.azure.com')) {
+    // `git config --get remote.origin.url` for azure repos will return different strings depending on if it was
+    // cloned with https or ssh. We need to convert this to a valid URL like "https://dev.azure.com/org/repo/_git/repo?path=/"
+    if (repoURL.startsWith('git@')) {
+      // ssh: "git@ssh.dev.azure.com:v3/org/repo/repo"
+      const [org, project1, project2] = repoURL.split('/').slice(-3)
+      return `https://dev.azure.com/${org}/${project1}/_git/${project2}?path=${relativeFilePath}&branch=${defaultBranch}`
+    } else {
+      // https: "https://org@dev.azure.com/org/repo/_git/repo"
+      const [_, url] = repoURL.split('@')
+      return `https://${url}?path=${relativeFilePath}&branch=${defaultBranch}`
+    }
+  } else {
+    logger.debug('Unknown remote URL - assuming GitHub Enterprise', url)
+    return `${url}/blob/${defaultBranch}${relativeFilePath}`
+  }
 }
 
 export function getStorybookUrl(filePath: string, storybookUrl: string) {
@@ -552,6 +590,10 @@ export function getDefaultConfigPath(dir: string) {
   return path.resolve(path.join(dir, DEFAULT_CONFIG_FILE_NAME))
 }
 
+export function getEnvPath(dir: string) {
+  return path.resolve(path.join(dir, ENV_FILE_NAME))
+}
+
 export async function parseOrDetermineConfig(dir: string, configPath: string) {
   const configFilePath = configPath ? path.resolve(configPath) : getDefaultConfigPath(dir)
 
@@ -596,6 +638,47 @@ export async function parseOrDetermineConfig(dir: string, configPath: string) {
 }
 
 /**
+ * Check if a .env file exists in the provided directory and if it contains a FIGMA_ACCESS_TOKEN.
+ */
+export async function checkForEnvAndToken(dir: string) {
+  // Scan the provided directory for a .env file
+  const envPath = await findUp('.env', { cwd: dir })
+
+  if (!envPath) {
+    // No .env file found
+    return {
+      hasEnvFile: false,
+      envHasFigmaToken: false,
+    }
+  }
+
+  // Read the contents of the .env file
+  const envContents = fs.readFileSync(envPath, 'utf-8')
+
+  // Determine if the .env file contains a FIGMA_ACCESS_TOKEN
+  const envVars = envContents.split('\n').reduce(
+    (
+      acc: {
+        [key: string]: string
+      },
+      line,
+    ) => {
+      const [key, value] = line.split('=')
+      acc[key] = value
+      return acc
+    },
+    {},
+  )
+
+  const figmaAccessToken = envVars['FIGMA_ACCESS_TOKEN']
+
+  return {
+    hasEnvFile: true,
+    envHasFigmaToken: !!figmaAccessToken,
+  }
+}
+
+/**
  * Gets information about a project from config.
  *
  * @param dir Directory containing the project
@@ -615,14 +698,14 @@ export async function getProjectInfoFromConfig(
 
   // always ignore any `node_modules` folders in react projects
   const defaultExcludeGlobs = config.parser
-    ? {
+    ? ({
         react: ['node_modules/**'],
         html: ['node_modules/**'],
         swift: [],
         compose: [],
         custom: [],
         __unit_test__: [],
-      }[config.parser] ?? []
+      }[config.parser] ?? [])
     : []
 
   const includeGlobs = config.include || defaultIncludeGlobs
@@ -692,7 +775,7 @@ export function getTsProgram(projectInfo: ProjectInfo<CodeConnectConfig>): ts.Pr
     // TODO: not sure why Node10 is needed her, but otherwise module resolution for
     // pnpm workspaces won't work
     moduleResolution: ts.ModuleResolutionKind.Node10,
-    paths: 'paths' in projectInfo.config ? projectInfo.config.paths ?? {} : {},
+    paths: 'paths' in projectInfo.config ? (projectInfo.config.paths ?? {}) : {},
     allowJs: true,
   }
 

@@ -13,11 +13,18 @@ import {
   CodeConnectConfig,
   ProjectInfo,
   CodeConnectExecutableParserConfig,
+  checkForEnvAndToken,
 } from '../../connect/project'
 import { parseFigmaNode } from '../validation'
 import chalk from 'chalk'
 import path from 'path'
-import { CreateRequestPayload, CreateResponsePayload } from '../parser_executable_types'
+import {
+  CreateRequestPayload,
+  CreateRequestPayloadMulti,
+  CreateResponsePayload,
+  FigmaConnection,
+  PropMapping,
+} from '../parser_executable_types'
 import { normalizeComponentName } from '../create'
 import { createReactCodeConnect } from '../../react/create'
 import { CodeConnectJSON } from '../../connect/figma_connect'
@@ -29,6 +36,8 @@ import {
   parseFilepathExport,
   getIncludesGlob,
   isValidFigmaUrl,
+  createEnvFile,
+  addTokenToEnvFile,
 } from './helpers'
 import stripAnsi from 'strip-ansi'
 import { callParser, handleMessages } from '../parser_executables'
@@ -38,10 +47,12 @@ import { fromError } from 'zod-validation-error'
 import { autoLinkComponents } from './autolinking'
 import { extractDataAndGenerateAllPropsMappings } from './prop_mapping_helpers'
 import { isFetchError, request } from '../../common/fetch'
+import { ComponentTypeSignature } from '../../react/parser'
 
 type ConnectedComponentMappings = { componentName: string; filepathExport: string }[]
 
 const NONE = '(None)'
+const MAX_COMPONENTS_TO_MAP = 40
 
 function clearQuestion(prompt: prompts.PromptObject<string>, answer: string) {
   const displayedAnswer =
@@ -124,9 +135,62 @@ async function fetchTopLevelComponentsFromFile({
         logger.error(`Failed to fetch components from Figma: ${err.message}`)
       }
       logger.debug(JSON.stringify(err.data))
+    } else {
+      logger.error(err)
     }
     exitWithFeedbackMessage(1)
   }
+}
+
+/**
+ * enable selection of a subset of components per page
+ * @param components to narrow down from
+ * @returns components narrowed down to the selected pages
+ */
+export async function narrowDownComponentsPerPage(
+  components: FigmaRestApi.Component[],
+  pages: Record<string, string>,
+) {
+  const createTitle = (name: string, id: string, pad: number) => {
+    const componentsInPage = components.filter((c) => c.pageId === id)
+    let namesPreview = componentsInPage
+      .slice(0, 4)
+      .map((c) => c.name)
+      .join(', ')
+
+    namesPreview = componentsInPage.length > 4 ? `${namesPreview}, ...` : `${namesPreview}`
+    const componentWord = componentsInPage.length === 1 ? 'Component' : 'Components'
+
+    return `${name.padEnd(pad, ' ')} - ${componentsInPage.length} ${componentWord} ${chalk.dim(
+      `(${namesPreview})`,
+    )}`
+  }
+
+  const longestPageName = Math.max(...Object.values(pages).map((name) => name.length))
+
+  let pagesToMap: string[] = []
+  console.info('')
+  while (true) {
+    const { pagesToMap_temp } = await askQuestion({
+      type: 'multiselect',
+      name: 'pagesToMap_temp',
+      message: `Select the pages with the Figma components you'd like to map (Press ${chalk.green('space')} to select and ${chalk.green('enter')} to continue)`,
+      instructions: false,
+      choices: Object.entries(pages).map(([id, name]) => ({
+        title: createTitle(name, id, longestPageName),
+        value: id,
+      })),
+    })
+
+    if (!pagesToMap_temp || pagesToMap_temp.length === 0) {
+      logger.warn('Select at least one page to continue.')
+      continue
+    }
+    pagesToMap = pagesToMap_temp
+    break
+  }
+
+  return components.filter((c) => pagesToMap.includes(c.pageId))
 }
 
 /**
@@ -196,8 +260,13 @@ async function askQuestionWithExitConfirmation<T extends string = string>(
 }
 
 function formatComponentTitle(componentName: string, filepathExport: string | null, pad: number) {
+  const fileExport = filepathExport ? parseFilepathExport(filepathExport) : null
   const nameLabel = `${chalk.dim('Figma component:')} ${componentName.padEnd(pad, ' ')}`
-  const linkedLabel = `↔️ ${filepathExport ? parseFilepathExport(filepathExport).filepath : '-'}`
+
+  const filepathLabel = fileExport ? fileExport.filepath : '-'
+  const exportNote = fileExport?.exportName ? ` (${fileExport.exportName})` : ''
+
+  const linkedLabel = `↔️ ${chalk.dim('Code Definition:')} ${filepathLabel}${exportNote}`
   return `${nameLabel}  ${linkedLabel}`
 }
 
@@ -233,7 +302,7 @@ export function getComponentChoicesForPrompt(
     return {
       title: formatComponentTitle(c.name, filepathExport, longestNameLength),
       value: c.id,
-      description: `${chalk.green('Edit link')}`,
+      description: `${chalk.green('Edit Match')}`,
     }
   }
 
@@ -274,6 +343,25 @@ type ManualLinkingArgs = {
   cmd: BaseCommand
 }
 
+const escapeHandler = () => {
+  let escPressed = false
+  const keypressListener = (_: any, key: { name: string }) => {
+    if (key.name === 'escape') {
+      escPressed = true
+    }
+  }
+  process.stdin.on('keypress', keypressListener)
+  return {
+    escPressed: () => escPressed,
+    reset: () => {
+      escPressed = false
+    },
+    destroy: () => {
+      process.stdin.removeListener('keypress', keypressListener)
+    },
+  }
+}
+
 async function runManualLinking({
   unconnectedComponents,
   linkedNodeIdsToFilepathExports,
@@ -283,13 +371,14 @@ async function runManualLinking({
 }: ManualLinkingArgs) {
   const filesToComponentOptionsMap = getComponentOptionsMap(filepathExports)
   const dir = getDir(cmd)
+  const escHandler = escapeHandler()
   while (true) {
     // Don't show exit confirmation as we're relying on esc behavior
     const { nodeId } = await prompts(
       {
         type: 'select',
         name: 'nodeId',
-        message: `Select a link to edit (Press ${chalk.green(
+        message: `Select a Figma component match you'd like to edit (Press ${chalk.green(
           'esc',
         )} when you're ready to continue on)`,
         choices: getComponentChoicesForPrompt(
@@ -306,7 +395,7 @@ async function runManualLinking({
       },
     )
     if (!nodeId) {
-      return
+      break
     }
     const pathChoices = getUnconnectedComponentChoices(Object.keys(filesToComponentOptionsMap), dir)
     const prevSelectedKey = linkedNodeIdsToFilepathExports[nodeId]
@@ -318,6 +407,7 @@ async function runManualLinking({
           exportName: null,
         }
 
+    escHandler.reset()
     const { pathToComponent } = await prompts(
       {
         type: 'autocomplete',
@@ -338,6 +428,9 @@ async function runManualLinking({
         onSubmit: clearQuestion,
       },
     )
+    if (escHandler.escPressed()) {
+      continue
+    }
     if (pathToComponent) {
       if (pathToComponent === NONE) {
         delete linkedNodeIdsToFilepathExports[nodeId]
@@ -347,6 +440,7 @@ async function runManualLinking({
           // Not TS, default to filepath
           linkedNodeIdsToFilepathExports[nodeId] = pathToComponent
         } else {
+          escHandler.reset()
           const { filepathExport } = await prompts(
             {
               type: 'autocomplete',
@@ -368,29 +462,32 @@ async function runManualLinking({
               onSubmit: clearQuestion,
             },
           )
+          if (escHandler.escPressed()) {
+            continue
+          }
           linkedNodeIdsToFilepathExports[nodeId] = filepathExport
         }
       }
     }
   }
+  escHandler.destroy()
 }
 
 async function runManualLinkingWithConfirmation(manualLinkingArgs: ManualLinkingArgs) {
   let outDir = manualLinkingArgs.cmd.outDir || null
-  let hasAskedOutDirQuestion = false
 
   while (true) {
     await runManualLinking(manualLinkingArgs)
 
-    if (!outDir && !hasAskedOutDirQuestion) {
+    if (!outDir) {
+      console.info(
+        '\nA Code Connect file is created for each Figma component to code definition match.',
+      )
       const { outputDirectory } = await askQuestionWithExitConfirmation({
         type: 'text',
         name: 'outputDirectory',
-        message: `What directory should Code Connect files be created in? (Press ${chalk.green(
-          'enter',
-        )} to co-locate your files alongside your component files)`,
+        message: `In which directory would you like to store Code Connect files? (Press ${chalk.green('enter')} to co-locate your files alongside your component files)`,
       })
-      hasAskedOutDirQuestion = true
       outDir = outputDirectory
     }
 
@@ -432,14 +529,90 @@ async function runManualLinkingWithConfirmation(manualLinkingArgs: ManualLinking
           },
         ],
       })
-      if (confirmation !== 'backToEdit') {
+      if (confirmation === 'backToEdit') {
+        outDir = manualLinkingArgs.cmd.outDir || null
+      } else {
         return outDir
       }
     }
   }
 }
 
-async function createCodeConnectFiles({
+interface AddPayloadArgs {
+  payloadType: 'MULTI_EXPORT' | 'SINGLE_EXPORT'
+  filepath: string
+  sourceExport: string
+  reactTypeSignature?: ComponentTypeSignature
+  propMapping?: PropMapping
+  figmaNodeUrl: string
+  moreComponentProps: FigmaRestApi.Component
+  destinationDir: string
+  sourceFilepath: string
+  normalizedName: string
+  config: CodeConnectConfig
+}
+
+export async function addPayload(
+  payloads: Record<string, CreateRequestPayloadMulti | CreateRequestPayload>,
+  args: AddPayloadArgs,
+) {
+  const {
+    payloadType,
+    filepath,
+    sourceExport,
+    reactTypeSignature,
+    propMapping,
+    figmaNodeUrl,
+    moreComponentProps,
+    destinationDir,
+    sourceFilepath,
+    normalizedName,
+    config,
+  } = args
+
+  if (payloadType === 'MULTI_EXPORT') {
+    const figmaConnection: FigmaConnection = {
+      sourceExport,
+      reactTypeSignature,
+      propMapping,
+      component: {
+        figmaNodeUrl,
+        ...moreComponentProps,
+      },
+    }
+
+    if (payloads[filepath]) {
+      ;(payloads[filepath] as CreateRequestPayloadMulti).figmaConnections.push(figmaConnection)
+    } else {
+      const payload: CreateRequestPayloadMulti = {
+        mode: 'CREATE',
+        destinationDir,
+        sourceFilepath,
+        normalizedName,
+        figmaConnections: [figmaConnection],
+        config,
+      }
+      payloads[filepath] = payload
+    }
+  }
+
+  if (payloadType === 'SINGLE_EXPORT') {
+    const payload: CreateRequestPayload = {
+      mode: 'CREATE',
+      destinationDir,
+      sourceFilepath,
+      component: {
+        figmaNodeUrl,
+        normalizedName,
+        ...moreComponentProps,
+      },
+      config,
+    }
+    payloads[filepath] = payload
+  }
+}
+
+export async function createCodeConnectFiles({
   linkedNodeIdsToFilepathExports,
   figmaFileUrl,
   unconnectedComponentsMap,
@@ -491,6 +664,10 @@ async function createCodeConnectFiles({
     embeddingsFetchSpinner.stop()
   }
 
+  let allFilesCreated = true
+
+  const payloads: Record<string, CreateRequestPayloadMulti | CreateRequestPayload> = {}
+
   for (const [nodeId, filepathExport] of Object.entries(linkedNodeIdsToFilepathExports)) {
     const urlObj = new URL(figmaFileUrl)
     urlObj.search = ''
@@ -501,32 +678,38 @@ async function createCodeConnectFiles({
 
     const outDir = outDirArg || path.dirname(filepath)
 
-    const payload: CreateRequestPayload = {
-      mode: 'CREATE',
-      destinationDir: outDir,
-      sourceFilepath: filepath,
-      sourceExport: exportName || undefined,
+    const payloadType =
+      projectInfo.config.parser === 'react' || projectInfo.config.parser === 'html'
+        ? 'MULTI_EXPORT'
+        : 'SINGLE_EXPORT'
+
+    addPayload(payloads, {
+      payloadType,
+      filepath,
+      sourceExport: exportName || '?',
       reactTypeSignature: propMappingsAndData?.propMappingData[filepathExport]?.signature,
       propMapping: propMappingsAndData?.propMappings[filepathExport],
-      component: {
-        figmaNodeUrl: urlObj.toString(),
-        normalizedName: normalizeComponentName(name),
-        ...unconnectedComponentsMap[nodeId],
-      },
+      figmaNodeUrl: urlObj.toString(),
+      moreComponentProps: unconnectedComponentsMap[nodeId],
+      destinationDir: outDir,
+      sourceFilepath: filepath,
+      normalizedName: normalizeComponentName(name),
       config: projectInfo.config,
-    }
+    })
+  }
 
+  for (const payloadKey of Object.keys(payloads)) {
+    const payload = payloads[payloadKey]
     let result: z.infer<typeof CreateResponsePayload>
-
     if (projectInfo.config.parser === 'react') {
-      result = await createReactCodeConnect(payload)
+      result = await createReactCodeConnect(payload as CreateRequestPayloadMulti)
     } else {
       try {
         const stdout = await callParser(
           // We use `as` because the React parser makes the types difficult
           // TODO remove once React is an executable parser
           projectInfo.config as CodeConnectExecutableParserConfig,
-          payload,
+          payload as CreateRequestPayload,
           projectInfo.absPath,
         )
 
@@ -542,8 +725,11 @@ async function createCodeConnectFiles({
       result.createdFiles.forEach((file) => {
         logger.info(success(`Created ${file.filePath}`))
       })
+    } else {
+      allFilesCreated = false
     }
   }
+  return allFilesCreated
 }
 
 export function convertRemoteFileUrlToRelativePath({
@@ -729,11 +915,14 @@ export async function runWizard(cmd: BaseCommand) {
 
   const dir = getDir(cmd)
   const { hasConfigFile, config } = await parseOrDetermineConfig(dir, cmd.config)
+  const { hasEnvFile, envHasFigmaToken } = await checkForEnvAndToken(dir)
 
   // This isn't ideal as you see the intro text followed by an error, but we'll
   // add support for this soon so I think it's OK
   if (config.parser === 'html') {
-    exitWithError('HTML projects are currently not supported by Code Connect interactive setup')
+    exitWithError(
+      'HTML projects are currently not supported by Code Connect interactive setup. Please use the "npx figma connect create" command instead.',
+    )
   }
 
   let accessToken = getAccessToken(cmd)
@@ -751,6 +940,53 @@ export async function runWizard(cmd: BaseCommand) {
 
   logger.info('')
 
+  if (!hasEnvFile) {
+    // If there is no .env file, we should ask the user if they want to create one
+    // to store the Figma token.
+
+    const { createConfigFile } = await askQuestionOrExit({
+      type: 'select',
+      name: 'createConfigFile',
+      message:
+        "It looks like you don't have a .env file. Would you like to generate one now to store the Figma access token?",
+      choices: [
+        {
+          title: 'Yes',
+          value: 'yes',
+        },
+        {
+          title: 'No',
+          value: 'no',
+        },
+      ],
+    })
+
+    if (createConfigFile === 'yes') {
+      await createEnvFile({ dir, accessToken })
+    }
+  } else if (!envHasFigmaToken) {
+    // If there is a .env file but no Figma token, we should ask the user if they want to add it.
+    const { addFigmaToken } = await askQuestionOrExit({
+      type: 'select',
+      name: 'addFigmaToken',
+      message: 'Would you like to add your Figma access token to your .env file?',
+      choices: [
+        {
+          title: 'Yes',
+          value: 'yes',
+        },
+        {
+          title: 'No',
+          value: 'no',
+        },
+      ],
+    })
+
+    if (addFigmaToken === 'yes') {
+      addTokenToEnvFile({ dir, accessToken })
+    }
+  }
+
   const { componentDirectory, projectInfo, filepathExports } =
     await askForTopLevelDirectoryOrDetermineFromConfig({
       dir,
@@ -759,14 +995,23 @@ export async function runWizard(cmd: BaseCommand) {
       cmd,
     })
 
-  const { figmaFileUrl } = await askQuestionOrExit({
-    type: 'text',
-    message: 'What is the URL of the Figma file containing your design system library?',
-    name: 'figmaFileUrl',
-    validate: (value: string) => isValidFigmaUrl(value) || 'Please enter a valid Figma file URL.',
-  })
+  let figmaFileUrl: any
+  if (config.interactiveSetupFigmaFileUrl) {
+    logger.info(`Using Figma file URL from config: ${config.interactiveSetupFigmaFileUrl}\n`)
+    figmaFileUrl = config.interactiveSetupFigmaFileUrl
+  } else {
+    let { figmaFileUrl: answer } = await askQuestionOrExit({
+      type: 'text',
+      message:
+        "What is the URL of the Figma file containing design components you'd like to connect?",
+      name: 'figmaFileUrl',
+      validate: (value: string) => isValidFigmaUrl(value) || 'Please enter a valid Figma file URL.',
+    })
 
-  const componentsFromFile = await fetchTopLevelComponentsFromFile({
+    figmaFileUrl = answer
+  }
+
+  let componentsFromFile = await fetchTopLevelComponentsFromFile({
     accessToken,
     figmaUrl: figmaFileUrl,
     cmd,
@@ -781,7 +1026,7 @@ export async function runWizard(cmd: BaseCommand) {
       type: 'select',
       name: 'createConfigFile',
       message:
-        "It looks like you don't have a Code Connect config file. Would you like to generate one now from your provided answers?",
+        "It looks like you don't have a Code Connect config file (figma.config.json). Would you like to generate one now from your provided answers?",
       choices: [
         {
           title: 'Yes',
@@ -794,7 +1039,7 @@ export async function runWizard(cmd: BaseCommand) {
       ],
     })
     if (createConfigFile === 'yes') {
-      await createCodeConnectConfig({ dir, componentDirectory, config })
+      await createCodeConnectConfig({ dir, componentDirectory, config, figmaUrl: figmaFileUrl })
     }
   }
 
@@ -805,7 +1050,7 @@ export async function runWizard(cmd: BaseCommand) {
       type: 'select',
       name: 'useAi',
       message:
-        'Code Connect offers AI support for accurate prop mapping between Figma and code components. Data is used only for mapping and is not stored or used for training. To learn more, visit https://help.figma.com/hc/en-us/articles/23920389749655-Code-Connect',
+        'Code Connect offers AI support to map properties between the Figma file and components in your codebase. Data is used only for mapping and is not stored or used for AI training. To learn more, visit https://help.figma.com/hc/en-us/articles/23920389749655-Code-Connect',
       choices: [
         {
           title: 'Do not use AI for prop mapping (default)',
@@ -819,6 +1064,22 @@ export async function runWizard(cmd: BaseCommand) {
     })
 
     useAi = useAiSelection === 'yes'
+  }
+
+  const pagesFromFile: Record<string, string> = componentsFromFile.reduce(
+    (acc, c) => {
+      acc[c.pageId] = c.pageName
+      return acc
+    },
+    {} as Record<string, string>,
+  )
+  const pagesFromFileCount = Object.keys(pagesFromFile).length
+
+  if (componentsFromFile.length > MAX_COMPONENTS_TO_MAP && pagesFromFileCount > 1) {
+    logger.info(
+      `${componentsFromFile.length} Figma components found in the Figma file across ${pagesFromFileCount} pages.`,
+    )
+    componentsFromFile = await narrowDownComponentsPerPage(componentsFromFile, pagesFromFile)
   }
 
   const linkedNodeIdsToFilepathExports = {}
@@ -839,7 +1100,7 @@ export async function runWizard(cmd: BaseCommand) {
 
   logger.info(
     boxen(
-      `${chalk.bold(`Connecting your components`)}\n\n` +
+      `${chalk.bold(`Connecting your Figma components`)}\n\n` +
         `${chalk.green(
           `${chalk.bold(Object.keys(linkedNodeIdsToFilepathExports).length)} ${
             Object.keys(linkedNodeIdsToFilepathExports).length === 1
@@ -880,7 +1141,7 @@ export async function runWizard(cmd: BaseCommand) {
     {} as Record<string, FigmaRestApi.Component>,
   )
 
-  await createCodeConnectFiles({
+  const success = await createCodeConnectFiles({
     linkedNodeIdsToFilepathExports,
     unconnectedComponentsMap,
     figmaFileUrl,
@@ -890,4 +1151,8 @@ export async function runWizard(cmd: BaseCommand) {
     accessToken,
     useAi,
   })
+
+  if (success) {
+    logger.info(`\nUse the 'publish' command to make mappings visible in Figma Dev Mode.`)
+  }
 }

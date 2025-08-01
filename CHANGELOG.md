@@ -1,3 +1,95 @@
+# Code Connect v1.3.4 (26th June 2025)
+
+### Fixed
+
+# React
+
+- Support getProps inside nestedProps
+
+# Code Connect v1.3.3 (22nd May 2025)
+
+## Features
+
+### Compose
+- Enhanced `--verbose` command to output detailed stacktrace.
+
+## Fixed
+
+### General
+- Bumped Undici version to address security issue
+
+# Code Connect v1.3.2 (4th April 2025)
+
+## Fixed
+
+### General
+- Added support for GitHub Enterprise source links (fixes https://github.com/figma/code-connect/issues/259)
+
+### React
+- Fixed incompatibility issue with React 19 (fixes https://github.com/figma/code-connect/issues/265)
+- Fixed issue with numeric characters in property names
+
+### HTML
+- Allow examples to return strings to support icon IDs (fixes https://github.com/figma/code-connect/issues/252)
+
+# Code Connect v1.3.1 (14th February 2025)
+
+## Fixed
+
+- Allow .gradle files to be detected as Android/Compose projects. Thanks to @sebastienrouif for the [PR](https://github.com/figma/code-connect/pull/237)
+- Remove prompts patching (fixes https://github.com/figma/code-connect/issues/241)
+
+## Features
+
+- Added `interactiveSetupFigmaFileUrl` to the interactive setup, allowing you to specify the Figma file to use for connecting components in your `figma.config.json` file.
+- Rename `--include-raw-templates` flag to `--include-template-files`. Further details of this feature can be found in the [documentation](https://www.figma.com/code-connect-docs/no-parser/).
+
+### SwiftUI
+- Updated `swift-syntax` to point to the new URL. Thanks to @pontusJPaf for the [PR](https://github.com/figma/code-connect/pull/239).
+
+# Code Connect v1.3.0 (28th January 2025)
+
+## Features
+- Add support for JSX Figma connection files.
+- Added an option to automatically create or append the access token to the project's .env file
+- Add better handling of many figma components in the wizard (grouping per page)
+- Allow variant restrictions to use boolean-like properties
+
+### General
+- Added support for Bitbucket, Gitlab and Azure DevOps for generated source file URLs
+
+## Fixed
+- Don't show a red-cross when the file-matching prompt is finished in the wizard
+- Add default values for `@FigmaEnum` declarations in SwiftUI
+
+### SwiftUI
+- Fixed a formatting error when running the CLI
+
+### React
+- Fix nested objects and arrays in props not rendering properly in code snippets
+- Fixed a type issue when passing functions as values to `figma.boolean`
+- Add support for multiple exports per file in the wizard
+
+### Storybook
+- Add support for different props per example (fixes https://github.com/figma/code-connect/issues/143)
+- Add support for `links` and `imports` (fixes https://github.com/figma/code-connect/issues/142)
+
+# Code Connect v1.2.4 (5th December 2024)
+
+## Fixed
+- Fix issue with CLI not working on some cases in 1.2.3
+
+# Code Connect v1.2.3
+
+## Features
+
+## Fixed
+- In the interactive setup, the automatic file linking now matches components exported from index files
+
+### React
+- Fix issue where React component references in `props` would serialize to strings when accessed with `getProps()`
+- Fix issue with nesting `figma.boolean` and `getProps`
+
 # Code Connect v1.2.2 (5th November 2024)
 
 ## Features
